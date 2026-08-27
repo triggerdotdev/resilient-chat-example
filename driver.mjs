@@ -4,11 +4,16 @@ import { AgentChat } from "@trigger.dev/sdk/chat";
 /**
  * Server-side driver for the resilient-chat example.
  *
- * Runs two scripted conversations against the deployed `resilient-chat` agent and
- * prints PASS/FAIL plus the assistant replies. Watch your `trigger dev` terminal for
- * the `[resilient-chat]` lines that show the fallback and the previousResponseId reuse.
+ * Runs four scripted conversations against the deployed agents and prints PASS/FAIL.
+ * Watch your `trigger dev` terminal for the `[resilient-chat]` / `[context-editing]`
+ * lines that show the fallback, the previousResponseId reuse, the compaction lifecycle,
+ * and the native context-editing counts.
  *
- * Run with:  node --env-file=.env driver.mjs
+ * Run compaction (Test C) and context editing (Test D) with a low threshold so they
+ * fire in a short demo:
+ *
+ *   COMPACT_AT_TOKENS=100 npx trigger dev      # in one terminal
+ *   node --env-file=.env driver.mjs            # in another
  */
 
 if (!process.env.TRIGGER_SECRET_KEY) {
@@ -16,12 +21,10 @@ if (!process.env.TRIGGER_SECRET_KEY) {
   process.exit(1);
 }
 
-configure({
-  baseURL: process.env.TRIGGER_API_URL,
-  secretKey: process.env.TRIGGER_SECRET_KEY,
-});
+configure({ baseURL: process.env.TRIGGER_API_URL, secretKey: process.env.TRIGGER_SECRET_KEY });
 
 const rid = (p) => `${p}-${Math.random().toString(36).slice(2, 10)}`;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function turn(chat, text) {
   const stream = await chat.sendMessage(text);
@@ -38,6 +41,7 @@ async function main() {
   const aPass = /4287/.test(a2);
   console.log("A RESULT:", aPass ? "PASS (history survived the provider switch)" : "FAIL");
   await a.close();
+  await sleep(5000);
 
   console.log("\n===== Test B: OpenAI native store — history not resent =====");
   const b = new AgentChat({ agent: "resilient-chat", id: rid("openai-store") });
@@ -48,10 +52,37 @@ async function main() {
   const bPass = /axolotl/i.test(b2);
   console.log("B RESULT:", bPass ? "PASS (recalled via OpenAI server-side state)" : "FAIL");
   await b.close();
+  await sleep(5000);
+
+  console.log("\n===== Test C: compaction fires + summary survives a provider switch =====");
+  console.log("(needs COMPACT_AT_TOKENS low, e.g. 100, on the worker)");
+  const c = new AgentChat({ agent: "resilient-chat", id: rid("compaction") });
+  const c1 = await turn(c, "[[provider:anthropic]] Please remember this fact for later: the project launch date is March 14.");
+  console.log("C turn1 (anthropic, states the fact):", JSON.stringify(c1.slice(0, 80)));
+  const c2 = await turn(c, "[[provider:anthropic]] Now, for context, write about five short paragraphs on general software project management best practices.");
+  console.log("C turn2 (anthropic, long -> triggers compaction; the fact is now only in the summary):", JSON.stringify(c2.slice(0, 60)) + "...");
+  const c3 = await turn(c, "[[provider:openai]] What is the project launch date? Reply with only the date.");
+  console.log("C turn3 (openai, sees summary + recent, NOT the raw fact message):", JSON.stringify(c3));
+  const cPass = /march 14/i.test(c3);
+  console.log("C RESULT:", cPass ? "PASS (compaction summary carried the fact across the provider switch)" : "FAIL (did compaction fire? set COMPACT_AT_TOKENS=100)");
+  await c.close();
+  await sleep(5000);
+
+  console.log("\n===== Test D: Anthropic native context-editing clears tool uses =====");
+  const d = new AgentChat({ agent: "context-editing", id: rid("context-editing") });
+  const d1 = await turn(
+    d,
+    "Fetch records 1, 2, 3, 4, 5, and 6 using the fetchRecord tool, one call per record. After fetching all six, reply with just the word DONE."
+  );
+  console.log("D turn1 reply:", JSON.stringify(d1.slice(0, 80)));
+  console.log("D: proof is the worker log line [context-editing] TURN DONE clearedToolUses=N (N>0 = native clearing fired)");
+  await d.close();
 
   console.log("\n===== SUMMARY =====");
   console.log("A (fallback preserves history):", aPass ? "PASS" : "FAIL");
   console.log("B (openai store, no full resend):", bPass ? "PASS" : "FAIL");
+  console.log("C (compaction fires + summary survives switch):", cPass ? "PASS" : "FAIL");
+  console.log("D (anthropic context editing): see the worker log for clearedToolUses");
 }
 
 main()

@@ -1,27 +1,30 @@
 import { chat } from "@trigger.dev/sdk/ai";
-import { logger } from "@trigger.dev/sdk";
 import { streamText, generateText, stepCountIs, generateId, type ModelMessage } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { openai } from "@ai-sdk/openai";
 
 /**
  * A chat.agent that can fall back from one LLM provider to another mid-conversation
- * WITHOUT losing history, and that persists provider-native compaction so the full
- * transcript is not re-sent on every turn.
+ * WITHOUT losing history, and that persists compaction so the full transcript is not
+ * re-sent on every turn.
  *
  * The division of labor:
  *
  * - Provider-native compaction (OpenAI Responses `store` + `previousResponseId`,
- *   Anthropic `contextManagement`) is per-request and provider-specific. It is the
- *   optimization that stops you re-sending the whole history within a provider.
+ *   Anthropic `contextManagement`) is a per-request, provider-specific optimization.
+ *   OpenAI's stored responses persist server-side, so later turns send only the delta.
+ *   Anthropic's context editing is stateless per request (see ./context-editing.ts),
+ *   so on its own it does not stop you re-sending the messages across turns.
  * - trigger.dev's `compaction` config is the durable, provider-AGNOSTIC checkpoint:
  *   `summarize` returns a plain string and `compactModelMessages` returns neutral
- *   ModelMessages. That is what survives a provider switch.
+ *   ModelMessages. That summary is stored in the chat history, so the next turn sends
+ *   the summary instead of the raw transcript, and it survives a provider switch.
  * - The native handle is persisted TAGGED with the provider that produced it. On a
  *   switch it is a cache miss, so we fall back to the portable summary + recent
  *   messages instead of blowing the context back open.
  *
- * See the README for the full explanation and the known caveats.
+ * `COMPACT_AT_TOKENS` defaults to 80k for real use. Set it low (e.g. 100) to watch
+ * compaction fire in a short demo conversation. See the README.
  */
 
 type Provider = "anthropic" | "openai";
@@ -32,7 +35,7 @@ const MODELS = {
 } as const;
 
 const FALLBACK_ORDER: Provider[] = ["anthropic", "openai"];
-const COMPACT_AT_TOKENS = 80_000;
+const COMPACT_AT_TOKENS = Number(process.env.COMPACT_AT_TOKENS) || 80_000;
 
 /**
  * The provider-native handle we persist between turns. Only OpenAI's stored-response
@@ -82,6 +85,7 @@ function messagesSinceLastAssistant(messages: ModelMessage[]): ModelMessage[] {
 
 /** Provider-agnostic summary. A plain string, portable across any provider. */
 async function summarizeConversation(messages: ModelMessage[]): Promise<string> {
+  console.log(`[resilient-chat] summarize() running over ${messages.length} messages (provider-agnostic)`);
   const { text } = await generateText({
     model: openai("gpt-4o-mini"),
     messages: [
@@ -110,11 +114,15 @@ export const resilientChat = chat.agent({
   },
 
   compaction: {
-    shouldCompact: ({ totalTokens }) => (totalTokens ?? 0) > COMPACT_AT_TOKENS,
+    shouldCompact: ({ totalTokens }) => {
+      const decision = (totalTokens ?? 0) > COMPACT_AT_TOKENS;
+      console.log(`[resilient-chat] shouldCompact totalTokens=${totalTokens ?? 0} threshold=${COMPACT_AT_TOKENS} -> ${decision}`);
+      return decision;
+    },
     summarize: ({ messages }) => summarizeConversation(messages),
     compactModelMessages: ({ modelMessages, summary }) => [
       { role: "user", content: `Summary of the conversation so far:\n\n${summary}` },
-      ...modelMessages.slice(-4),
+      ...modelMessages.slice(-2),
     ],
     compactUIMessages: ({ uiMessages, summary }) => [
       {
@@ -122,7 +130,7 @@ export const resilientChat = chat.agent({
         role: "assistant",
         parts: [{ type: "text", text: `[Conversation summary]\n\n${summary}` }],
       },
-      ...uiMessages.slice(-4),
+      ...uiMessages.slice(-2),
     ],
   },
 
@@ -135,7 +143,9 @@ export const resilientChat = chat.agent({
     if (!chatId) return;
     summaryStore.set(chatId, summary);
     nativeStore.delete(chatId);
-    logger.info("resilient-chat: compacted (native handle invalidated)", { chatId });
+    console.log(
+      `[resilient-chat] onCompacted FIRED: summaryLen=${summary.length} nativeHandleInvalidated`
+    );
   },
 
   run: async ({ messages, chatId, signal }) => {
