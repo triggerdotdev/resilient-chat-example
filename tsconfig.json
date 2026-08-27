@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "ai": ["./node_modules/ai"],
+      "ai/*": ["./node_modules/ai/*"]
+    }
+  },
+  "include": ["src", "trigger.config.ts", "driver.mjs"]
+}

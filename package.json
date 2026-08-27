@@ -1,0 +1,26 @@
+{
+  "name": "resilient-chat-example",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Trigger.dev chat.agent example: provider fallback that preserves history + persisted provider-native compaction",
+  "engines": {
+    "node": ">=20 <24"
+  },
+  "scripts": {
+    "dev": "trigger dev",
+    "drive": "node --env-file=.env driver.mjs"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.0",
+    "@ai-sdk/openai": "^3.0.0",
+    "@trigger.dev/sdk": "^4.5.0",
+    "ai": "^6.0.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "trigger.dev": "^4.5.0",
+    "typescript": "^5.5.0"
+  }
+}
