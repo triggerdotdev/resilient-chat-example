@@ -23,9 +23,14 @@ Because the persisted baseline is a *summary*, even the one turn right after a s
 
 ```
 src/trigger/resilient-chat.ts    the main agent: fallback + OpenAI native store + trigger.dev compaction
-src/trigger/context-editing.ts   a focused agent showing Anthropic native context editing (clear_tool_uses)
+src/trigger/native-persist.ts    Anthropic native context editing, PERSISTED into chat.agent history so
+                                 the next turn re-sends the smaller conversation (no custom summarizer)
 driver.mjs                       a server-side driver that runs the four scenarios below
 ```
+
+`native-persist.ts` is the direct answer to "the provider compacts, but the compaction isn't
+persisted, so the next turn re-sends the whole history." It reads Anthropic's `appliedEdits` counts
+and mirrors the clearing into chat.agent's stored history with `chat.history.set()`.
 
 The main agent supports two demo directives, parsed from the user message, so a plain text driver can steer it: `[[provider:openai]]` / `[[provider:anthropic]]` picks the provider, `[[fail:anthropic]]` simulates that provider being down. Remove these in a real app.
 
@@ -75,8 +80,9 @@ Test C — compaction fires + summary survives a provider switch
   turn2 (anthropic, long): triggers compaction
   turn3 (openai): "March 14"                                               PASS
 
-Test D — Anthropic native context editing (see worker log)
-  reply: "DONE"
+Test D — Anthropic native compaction PERSISTED across turns (see worker log)
+  turn1: "DONE"          (6 tool calls; Anthropic clears the old ones server-side)
+  turn2: a short recap   (chat.agent re-sends the pruned history, not all 6 tool results)
 ```
 
 ## What to look for in the `trigger dev` logs
@@ -94,15 +100,23 @@ C (compaction):  [resilient-chat] shouldCompact totalTokens=373 threshold=100 ->
                  [resilient-chat] onCompacted FIRED: summaryLen=596 nativeHandleInvalidated
                  turn 3 [resilient-chat] run order=openai ... totalMessages=2   (summary + question, not the raw 3)
 
-D (context editing): [context-editing] TURN DONE clearedToolUses=4 clearedInputTokens=2287
+D (native compaction persisted):
+   [native-persist] anthropic cleared 4 tool-uses server-side this step
+   [native-persist] PERSISTED native reduction: ... toolParts 6 -> 2
+   turn 2 [native-persist] run: incoming ... toolResultsResent=1        (not 6)
 ```
 
-The two lines that answer the customer's question directly: `sent=1/3 messages` (B) means only the new message was sent, and `clearedToolUses=4` (D) means Anthropic cleared context server-side. Test C is the combined case: compaction fired, and OpenAI (a different provider than turn 1) answered "March 14" from a summary that saw 2 messages instead of the raw 3.
+The lines that answer the customer's question directly: in **D**, Anthropic clears 4 tool-uses
+server-side, we persist that into chat.agent's history (`toolParts 6 -> 2`), and turn 2 re-sends only
+`toolResultsResent=1` instead of all six — the provider's native compaction is now persisted across
+turns, no custom summarizer. In **B**, `sent=1/3 messages` shows OpenAI's stored responses doing the
+same for its provider. **C** is the fallback case: compaction fired and OpenAI (a different provider
+than turn 1) answered "March 14" from a summary that saw 2 messages instead of the raw 3.
 
 ## Caveats and honest limits
 
 - **Mid-stream failover needs a retry, not a `try/catch`.** The `try/catch` in `run()` only catches errors thrown synchronously when `streamText` is set up. A failure mid-stream goes through `uiMessageStreamOptions.onError` and ends the turn. To fail those over, have the frontend re-send the last message (`useChat`'s `regenerate()`), which re-enters `run()` and advances to the next provider. History is preserved either way.
-- **Anthropic context editing is per-request and stateless.** It reduces what the model processes but does not persist a compacted state; to stop re-sending across turns you prune your stored messages using the `appliedEdits` counts, or use trigger.dev compaction.
+- **Anthropic context editing is per-request and stateless.** It clears server-side but does not itself persist a compacted state, so `native-persist.ts` mirrors the `appliedEdits` counts into chat.agent's stored history (via `chat.history.set()`) to make the reduction persist across turns. Alternatively, use trigger.dev `compaction`.
 - **No cross-provider compaction translation.** A native ref never transfers; the provider-agnostic summary is the portable baseline that makes a switch safe.
 - **The stores here are in-memory.** `nativeStore` and `summaryStore` are `Map`s so the example runs with no database. Persist them in your own database for production.
 - **Rate limits.** The driver runs the four scenarios back to back; on a shared or low-tier API key you may hit rate limits. The driver spaces the tests out, but if you see empty replies, run the scenarios one at a time or lower the volume.

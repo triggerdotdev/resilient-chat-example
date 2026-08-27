@@ -68,21 +68,20 @@ async function main() {
   await c.close();
   await sleep(5000);
 
-  console.log("\n===== Test D: Anthropic native context-editing clears tool uses =====");
-  const d = new AgentChat({ agent: "context-editing", id: rid("context-editing") });
-  const d1 = await turn(
-    d,
-    "Fetch records 1, 2, 3, 4, 5, and 6 using the fetchRecord tool, one call per record. After fetching all six, reply with just the word DONE."
-  );
-  console.log("D turn1 reply:", JSON.stringify(d1.slice(0, 80)));
-  console.log("D: proof is the worker log line [context-editing] TURN DONE clearedToolUses=N (N>0 = native clearing fired)");
+  console.log("\n===== Test D: Anthropic native compaction PERSISTED across chat.agent turns =====");
+  const d = new AgentChat({ agent: "native-persist", id: rid("native-persist") });
+  const d1 = await turn(d, "Fetch records 1, 2, 3, 4, 5, and 6 using the fetchRecord tool, one call per record. Then reply with just DONE.");
+  console.log("D turn1 (6 tool calls; Anthropic clears old ones server-side):", JSON.stringify(d1.slice(0, 40)));
+  const d2 = await turn(d, "Give me a one-sentence recap of what you just did.");
+  console.log("D turn2 (chat.agent re-sends the pruned history, not all 6 tool results):", JSON.stringify(d2.slice(0, 90)));
+  console.log("D: proof is the worker log: [native-persist] PERSISTED ... toolParts 6 -> 2, then turn 2 run toolResultsResent < 6");
   await d.close();
 
   console.log("\n===== SUMMARY =====");
   console.log("A (fallback preserves history):", aPass ? "PASS" : "FAIL");
   console.log("B (openai store, no full resend):", bPass ? "PASS" : "FAIL");
   console.log("C (compaction fires + summary survives switch):", cPass ? "PASS" : "FAIL");
-  console.log("D (anthropic context editing): see the worker log for clearedToolUses");
+  console.log("D (anthropic native compaction persisted): see the worker log for 'toolParts 6 -> 2' + reduced resend");
 }
 
 main()
