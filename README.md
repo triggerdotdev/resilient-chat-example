@@ -8,7 +8,7 @@ Everything here is built on primitives that ship today: the `compaction` option 
 
 A provider can compact the context within a request (Anthropic clears old tool-uses / compacts; OpenAI stores the thread). But if that compaction isn't reflected in what `chat.agent` persists, the **next turn re-sends the whole history again** in its first API request. That is the thing to fix.
 
-**Anthropic native context editing, persisted (`src/trigger/native-persist.ts`).** Anthropic's `contextManagement` clears old tool-use / tool-result blocks server-side, per request, and reports how many it cleared in `providerMetadata.anthropic.contextManagement.appliedEdits` (`clearedToolUses`, `clearedInputTokens`). On its own it's stateless per request, so `chat.agent` still re-sends everything next turn. The fix, and the point of this file: after the turn, read the `appliedEdits` counts and **mirror the clearing into `chat.agent`'s stored history with `chat.history.set()`** in `onTurnComplete`. The next turn is derived from that pruned history, so it re-sends the smaller conversation. No custom summarizer.
+**Anthropic native context editing, persisted ([`src/trigger/native-persist.ts`](src/trigger/native-persist.ts)).** Anthropic's `contextManagement` clears old tool-use / tool-result blocks server-side, per request, and reports how many it cleared in `providerMetadata.anthropic.contextManagement.appliedEdits` (`clearedToolUses`, `clearedInputTokens`). On its own it's stateless per request, so `chat.agent` still re-sends everything next turn. The fix, and the point of this file: after the turn, read the `appliedEdits` counts and **mirror the clearing into `chat.agent`'s stored history with `chat.history.set()`** in `onTurnComplete`. The next turn is derived from that pruned history, so it re-sends the smaller conversation. No custom summarizer.
 
 ```
 [native-persist] run: incoming modelMessages=1 toolResultsResent=0       turn 1: just the user message
@@ -17,7 +17,7 @@ A provider can compact the context within a request (Anthropic clears old tool-u
 [native-persist] run: incoming modelMessages=5 toolResultsResent=1       turn 2 re-sends 1, not 6
 ```
 
-**OpenAI native store (`src/trigger/resilient-chat.ts`).** OpenAI Responses (`store` + `previousResponseId`) persists the thread server-side, so the same idea is even simpler: once OpenAI holds the thread, later turns send only the new message. Verified: turn 2 sends `1/3 messages`.
+**OpenAI native store ([`src/trigger/resilient-chat.ts`](src/trigger/resilient-chat.ts)).** OpenAI Responses (`store` + `previousResponseId`) persists the thread server-side, so the same idea is even simpler: once OpenAI holds the thread, later turns send only the new message. Verified: turn 2 sends `1/3 messages`.
 
 ## Also handled: falling back across providers without losing history
 
@@ -27,13 +27,12 @@ Because the persisted baseline is a *summary*, even the one turn right after a s
 
 ## What is in here
 
-```
-src/trigger/native-persist.ts    Anthropic native context editing, persisted into chat.agent history
-src/trigger/resilient-chat.ts    provider fallback + OpenAI native store + trigger.dev compaction
-driver.mjs                       a server-side driver that runs the four scenarios below
-```
+- [`src/trigger/native-persist.ts`](src/trigger/native-persist.ts) — Anthropic native context editing, persisted into `chat.agent` history
+- [`src/trigger/resilient-chat.ts`](src/trigger/resilient-chat.ts) — provider fallback + OpenAI native store + trigger.dev compaction
+- [`driver.mjs`](driver.mjs) — a server-side driver that runs the four scenarios below
+- [`trigger.config.ts`](trigger.config.ts) · [`.env.example`](.env.example)
 
-`resilient-chat` supports two demo directives, parsed from the user message, so a plain text driver can steer it: `[[provider:openai]]` / `[[provider:anthropic]]` picks the provider, `[[fail:anthropic]]` simulates that provider being down. Remove these in a real app. `COMPACT_AT_TOKENS` defaults to 80k; set it low (e.g. `100`) to watch trigger.dev compaction fire in a short demo.
+[`resilient-chat`](src/trigger/resilient-chat.ts) supports two demo directives, parsed from the user message, so a plain text driver can steer it: `[[provider:openai]]` / `[[provider:anthropic]]` picks the provider, `[[fail:anthropic]]` simulates that provider being down. Remove these in a real app. `COMPACT_AT_TOKENS` defaults to 80k; set it low (e.g. `100`) to watch trigger.dev compaction fire in a short demo.
 
 ## Setup
 
@@ -43,7 +42,7 @@ driver.mjs                       a server-side driver that runs the four scenari
    ```bash
    npm install
    ```
-3. Copy the environment file and fill it in (`TRIGGER_PROJECT_REF`, `TRIGGER_SECRET_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`):
+3. Copy [`.env.example`](.env.example) and fill it in (`TRIGGER_PROJECT_REF`, `TRIGGER_SECRET_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`):
 
    ```bash
    cp .env.example .env
@@ -110,7 +109,7 @@ The lines that answer the question directly: in **1**, Anthropic clears 4 tool-u
 ## Caveats and honest limits
 
 - **Mid-stream failover needs a retry, not a `try/catch`.** The `try/catch` in `run()` only catches errors thrown synchronously when `streamText` is set up. A failure mid-stream goes through `uiMessageStreamOptions.onError` and ends the turn. To fail those over, have the frontend re-send the last message (`useChat`'s `regenerate()`), which re-enters `run()` and advances to the next provider. History is preserved either way.
-- **Anthropic context editing is per-request and stateless.** It clears server-side but does not itself persist a compacted state, so `native-persist.ts` mirrors the `appliedEdits` counts into `chat.agent`'s stored history to make the reduction persist across turns. Alternatively, use trigger.dev `compaction`.
+- **Anthropic context editing is per-request and stateless.** It clears server-side but does not itself persist a compacted state, so [`native-persist.ts`](src/trigger/native-persist.ts) mirrors the `appliedEdits` counts into `chat.agent`'s stored history to make the reduction persist across turns. Alternatively, use trigger.dev `compaction`.
 - **No cross-provider compaction translation.** A native ref never transfers; the provider-agnostic summary is the portable baseline that makes a switch safe.
 - **The stores here are in-memory.** `nativeStore` and `summaryStore` are `Map`s so the example runs with no database. Persist them in your own database for production.
 - **Rate limits.** The driver runs the scenarios back to back; on a shared or low-tier API key you may hit rate limits. The driver spaces the tests out, but if you see empty replies, run the scenarios one at a time.
